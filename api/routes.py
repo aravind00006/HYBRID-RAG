@@ -1,5 +1,5 @@
 """
-api/routes.py — FastAPI route handlers.
+FastAPI route handlers.
 Single responsibility: HTTP request handling only.
 
 """
@@ -33,7 +33,7 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
-# Health 
+#  Health 
 
 @router.get(
     "/health",
@@ -43,7 +43,6 @@ router = APIRouter()
 async def health(request: Request) -> HealthResponse:
     """
     Return service status and whether retrievers are ready.
-
     """
     settings = get_settings()
     ready = (
@@ -57,13 +56,13 @@ async def health(request: Request) -> HealthResponse:
         model=settings.llm_model,
     )
 
-# Query 
+
+#  Query ─
 
 @router.post(
     "/query",
     response_model=QueryResponse,
     responses={
-        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
         503: {"model": ErrorResponse, "description": "Retrievers not ready"},
         500: {"model": ErrorResponse, "description": "Pipeline error"},
     },
@@ -86,11 +85,8 @@ async def query(body: QueryRequest, request: Request) -> QueryResponse:
 
     logger.info("Query received: '%s' (top_k=%d).", body.question[:60], body.top_k)
 
-    # Load pre-built retrievers from app.state — no index rebuilding.
-    bm25            = BM25Retriever.__new__(BM25Retriever)
-    bm25._documents = chunks
-    bm25._bm25      = request.app.state.bm25_index
-
+    # BM25Retriever instance built once at startup in main.py lifespan.
+    bm25     = request.app.state.bm25
     semantic = SemanticRetriever(store)
 
     try:
@@ -137,14 +133,14 @@ async def query(body: QueryRequest, request: Request) -> QueryResponse:
         question=body.question,
     )
 
-# Upload 
+
+#  Upload 
 
 @router.post(
     "/upload",
     response_model=UploadResponse,
     responses={
         400: {"model": ErrorResponse, "description": "Invalid file type"},
-        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
         500: {"model": ErrorResponse, "description": "Processing error"},
     },
     summary="Upload a PDF and replace the active document",
@@ -186,13 +182,10 @@ async def upload(request: Request, file: UploadFile = File(...)) -> UploadRespon
     finally:
         tmp_path.unlink(missing_ok=True)  # Always clean up the temp file.
 
-    # Rebuild BM25 index for the new document and update all app.state.
-    from rank_bm25 import BM25Okapi
-    tokenized = [c.page_content.lower().split() for c in chunks]
 
-    request.app.state.chunks     = chunks
-    request.app.state.store      = store
-    request.app.state.bm25_index = BM25Okapi(tokenized)
+    request.app.state.chunks = chunks
+    request.app.state.store  = store
+    request.app.state.bm25   = BM25Retriever(chunks)
 
     logger.info(
         "Upload complete — '%s', %d chunks embedded, BM25 rebuilt.",
