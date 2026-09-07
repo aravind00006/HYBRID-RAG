@@ -7,6 +7,7 @@ import io
 import pytest
 from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
+from langchain_core.documents import Document
 
 from api.main import create_app
 from retrieval.bm25_retriever import BM25Retriever
@@ -15,8 +16,26 @@ from retrieval.semantic_retriever import SemanticRetriever
 
 #  Fixtures 
 
-def make_mock_chunk(text: str = "Apple revenue was $391 billion.", page: int = 0):
-    """Helper — build a mock chunk dict as returned by hybrid_retrieve()."""
+def make_mock_document(
+    text: str = "Apple revenue was $391 billion.", page: int = 0
+) -> Document:
+    """
+    Helper — build a LangChain Document for lifespan startup mocking.
+
+    """
+    return Document(
+        page_content=text,
+        metadata={"source": "aapl-10k-2024.pdf", "page": page},
+    )
+
+
+def make_mock_retrieval_result(
+    text: str = "Apple revenue was $391 billion.", page: int = 0
+) -> dict:
+    """
+    Helper — build a retrieval result dict as returned by hybrid_retrieve().
+
+    """
     return {
         "text":     text,
         "score":    0.95,
@@ -29,31 +48,31 @@ def make_mock_chunk(text: str = "Apple revenue was $391 billion.", page: int = 0
 def client():
     """
     Create a test FastAPI client with mocked app.state.
-
-    """
-    mock_chunks = [make_mock_chunk()]
-    mock_store  = MagicMock()
+"""
+    # Document objects for lifespan startup (BM25 tokenization needs .page_content)
+    mock_documents = [make_mock_document()]
+    mock_store     = MagicMock()
 
     # Patch all startup I/O so tests run without real files or API keys.
     with (
-        patch("api.main.load_pdf",         return_value=mock_chunks),
-        patch("api.main.chunk_documents",  return_value=mock_chunks),
+        patch("api.main.load_pdf",         return_value=mock_documents),
+        patch("api.main.chunk_documents",  return_value=mock_documents),
         patch("api.main.load_store",       return_value=mock_store),
         patch("api.main.embed_and_store",  return_value=mock_store),
-        patch("api.main.BM25Okapi"),
+        patch("api.main.BM25Retriever", return_value=MagicMock(spec=BM25Retriever)),
         patch("pathlib.Path.exists",       return_value=True),
         patch("pathlib.Path.iterdir",      return_value=iter(["file"])),
     ):
         app = create_app()
-        app.state.chunks     = mock_chunks
+        app.state.chunks     = mock_documents
         app.state.store      = mock_store
-        app.state.bm25_index = MagicMock()
+        app.state.bm25 = MagicMock(spec=BM25Retriever)
 
         with TestClient(app) as c:
             yield c
 
 
-#  /health tests ─
+#  /health tests 
 
 class TestHealthEndpoint:
     """Tests for GET /api/v1/health."""
@@ -105,7 +124,7 @@ class TestQueryEndpoint:
     def test_query_returns_200(self, client):
         """Query endpoint returns HTTP 200 for a valid question."""
         with (
-            patch("api.routes.hybrid_retrieve",  return_value=[make_mock_chunk()]),
+            patch("api.routes.hybrid_retrieve",  return_value=[make_mock_retrieval_result()]),
             patch("api.routes.generate_answer",  return_value=self._mock_rag_response()),
             patch("api.routes.BM25Retriever"),
             patch("api.routes.SemanticRetriever"),
@@ -119,7 +138,7 @@ class TestQueryEndpoint:
     def test_query_response_has_required_fields(self, client):
         """Query response body contains answer, sources, model, tokens_used, question."""
         with (
-            patch("api.routes.hybrid_retrieve",  return_value=[make_mock_chunk()]),
+            patch("api.routes.hybrid_retrieve",  return_value=[make_mock_retrieval_result()]),
             patch("api.routes.generate_answer",  return_value=self._mock_rag_response()),
             patch("api.routes.BM25Retriever"),
             patch("api.routes.SemanticRetriever"),
@@ -139,7 +158,7 @@ class TestQueryEndpoint:
         """Query response echoes back the original question."""
         question = "What was Apple revenue in 2024?"
         with (
-            patch("api.routes.hybrid_retrieve",  return_value=[make_mock_chunk()]),
+            patch("api.routes.hybrid_retrieve",  return_value=[make_mock_retrieval_result()]),
             patch("api.routes.generate_answer",  return_value=self._mock_rag_response()),
             patch("api.routes.BM25Retriever"),
             patch("api.routes.SemanticRetriever"),
@@ -174,11 +193,11 @@ class TestQueryEndpoint:
             json={"question": "What was Apple revenue?", "top_k": 5},
         )
         assert response.status_code == 503
-        # Restore for other tests.
-        client.app.state.chunks = [make_mock_chunk()]
+        # Restore for other tests — must be Document objects, not dicts.
+        client.app.state.chunks = [make_mock_document()]
 
 
-#  /upload tests 
+#  /upload tests ─
 
 class TestUploadEndpoint:
     """Tests for POST /api/v1/upload."""
@@ -189,12 +208,14 @@ class TestUploadEndpoint:
 
     def test_upload_returns_200_for_valid_pdf(self, client):
         """Upload returns HTTP 200 for a valid PDF file."""
-        mock_chunks = [make_mock_chunk()]
-        mock_store  = MagicMock()
+        # Upload route calls chunk_documents which returns Documents.
+        mock_docs  = [make_mock_document()]
+        mock_store = MagicMock()
 
         with (
-            patch("api.routes.load_pdf",        return_value=mock_chunks),
-            patch("api.routes.chunk_documents", return_value=mock_chunks),
+            patch("api.routes.load_pdf",        return_value=mock_docs),
+            patch("api.routes.BM25Retriever",   return_value=MagicMock(spec=BM25Retriever)),
+            patch("api.routes.chunk_documents", return_value=mock_docs),
             patch("api.routes.embed_and_store", return_value=mock_store),
             patch("rank_bm25.BM25Okapi"),
         ):
@@ -206,12 +227,13 @@ class TestUploadEndpoint:
 
     def test_upload_response_has_required_fields(self, client):
         """Upload response body contains filename, chunks_created, message."""
-        mock_chunks = [make_mock_chunk()]
-        mock_store  = MagicMock()
+        mock_docs  = [make_mock_document()]
+        mock_store = MagicMock()
 
         with (
-            patch("api.routes.load_pdf",        return_value=mock_chunks),
-            patch("api.routes.chunk_documents", return_value=mock_chunks),
+            patch("api.routes.load_pdf",        return_value=mock_docs),
+            patch("api.routes.BM25Retriever",   return_value=MagicMock(spec=BM25Retriever)),
+            patch("api.routes.chunk_documents", return_value=mock_docs),
             patch("api.routes.embed_and_store", return_value=mock_store),
             patch("rank_bm25.BM25Okapi"),
         ):
@@ -234,12 +256,13 @@ class TestUploadEndpoint:
 
     def test_upload_sanitises_filename(self, client):
         """Upload strips path components from a malicious filename."""
-        mock_chunks = [make_mock_chunk()]
-        mock_store  = MagicMock()
+        mock_docs  = [make_mock_document()]
+        mock_store = MagicMock()
 
         with (
-            patch("api.routes.load_pdf",        return_value=mock_chunks),
-            patch("api.routes.chunk_documents", return_value=mock_chunks),
+            patch("api.routes.load_pdf",        return_value=mock_docs),
+            patch("api.routes.BM25Retriever",   return_value=MagicMock(spec=BM25Retriever)),
+            patch("api.routes.chunk_documents", return_value=mock_docs),
             patch("api.routes.embed_and_store", return_value=mock_store),
             patch("rank_bm25.BM25Okapi"),
         ):
@@ -260,7 +283,7 @@ class TestUploadEndpoint:
 
     def test_upload_updates_app_state(self, client):
         """Upload replaces app.state.chunks and app.state.store."""
-        new_chunks = [make_mock_chunk("New document content.", page=0)]
+        new_chunks = [make_mock_document("New document content.", page=0)]
         new_store  = MagicMock()
 
         with (
