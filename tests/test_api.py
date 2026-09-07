@@ -177,3 +177,102 @@ class TestQueryEndpoint:
         # Restore for other tests.
         client.app.state.chunks = [make_mock_chunk()]
 
+
+#  /upload tests 
+
+class TestUploadEndpoint:
+    """Tests for POST /api/v1/upload."""
+
+    def _make_pdf_bytes(self) -> bytes:
+        """Return minimal valid PDF-like bytes for upload testing."""
+        return b"%PDF-1.4 fake pdf content for testing"
+
+    def test_upload_returns_200_for_valid_pdf(self, client):
+        """Upload returns HTTP 200 for a valid PDF file."""
+        mock_chunks = [make_mock_chunk()]
+        mock_store  = MagicMock()
+
+        with (
+            patch("api.routes.load_pdf",        return_value=mock_chunks),
+            patch("api.routes.chunk_documents", return_value=mock_chunks),
+            patch("api.routes.embed_and_store", return_value=mock_store),
+            patch("rank_bm25.BM25Okapi"),
+        ):
+            response = client.post(
+                "/api/v1/upload",
+                files={"file": ("test.pdf", io.BytesIO(self._make_pdf_bytes()), "application/pdf")},
+            )
+        assert response.status_code == 200
+
+    def test_upload_response_has_required_fields(self, client):
+        """Upload response body contains filename, chunks_created, message."""
+        mock_chunks = [make_mock_chunk()]
+        mock_store  = MagicMock()
+
+        with (
+            patch("api.routes.load_pdf",        return_value=mock_chunks),
+            patch("api.routes.chunk_documents", return_value=mock_chunks),
+            patch("api.routes.embed_and_store", return_value=mock_store),
+            patch("rank_bm25.BM25Okapi"),
+        ):
+            response = client.post(
+                "/api/v1/upload",
+                files={"file": ("test.pdf", io.BytesIO(self._make_pdf_bytes()), "application/pdf")},
+            )
+        data = response.json()
+        assert "filename"       in data
+        assert "chunks_created" in data
+        assert "message"        in data
+
+    def test_upload_returns_400_for_non_pdf(self, client):
+        """Upload returns 400 when a non-PDF file is submitted."""
+        response = client.post(
+            "/api/v1/upload",
+            files={"file": ("report.txt", io.BytesIO(b"not a pdf"), "text/plain")},
+        )
+        assert response.status_code == 400
+
+    def test_upload_sanitises_filename(self, client):
+        """Upload strips path components from a malicious filename."""
+        mock_chunks = [make_mock_chunk()]
+        mock_store  = MagicMock()
+
+        with (
+            patch("api.routes.load_pdf",        return_value=mock_chunks),
+            patch("api.routes.chunk_documents", return_value=mock_chunks),
+            patch("api.routes.embed_and_store", return_value=mock_store),
+            patch("rank_bm25.BM25Okapi"),
+        ):
+            response = client.post(
+                "/api/v1/upload",
+                files={"file": (
+                    "../../etc/passwd.pdf",
+                    io.BytesIO(self._make_pdf_bytes()),
+                    "application/pdf",
+                )},
+            )
+
+        # The sanitised filename should be just 'passwd.pdf', not the traversal path.
+        if response.status_code == 200:
+            data = response.json()
+            assert "../../" not in data["filename"]
+            assert data["filename"] == "passwd.pdf"
+
+    def test_upload_updates_app_state(self, client):
+        """Upload replaces app.state.chunks and app.state.store."""
+        new_chunks = [make_mock_chunk("New document content.", page=0)]
+        new_store  = MagicMock()
+
+        with (
+            patch("api.routes.load_pdf",        return_value=new_chunks),
+            patch("api.routes.chunk_documents", return_value=new_chunks),
+            patch("api.routes.embed_and_store", return_value=new_store),
+            patch("rank_bm25.BM25Okapi"),
+        ):
+            client.post(
+                "/api/v1/upload",
+                files={"file": ("new.pdf", io.BytesIO(self._make_pdf_bytes()), "application/pdf")},
+            )
+
+        assert client.app.state.chunks == new_chunks
+        assert client.app.state.store  == new_store
