@@ -149,3 +149,66 @@ with st.sidebar:
     )
 
 
+#  Main chat area 
+
+st.title("Ask a Question")
+st.caption(
+    "Answers are grounded in the active document using Hybrid BM25 + Semantic search. "
+    "Every claim is cited with a source filename and page number."
+)
+
+# Initialise chat history.
+if "messages" not in st.session_state:
+    st.session_state["messages"] = []
+
+# Render existing messages.
+for msg in st.session_state["messages"]:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+        if msg["role"] == "assistant" and "sources" in msg:
+            with st.expander("Sources"):
+                for s in msg["sources"]:
+                    st.markdown(f"**{s['source']}** — Page {s['page']}")
+                    st.caption(s["preview"])
+
+# Chat input.
+if question := st.chat_input("e.g. What was Apple's revenue in fiscal year 2024?"):
+
+    if not health:
+        st.error("Backend is not reachable. Start the API first.")
+        st.stop()
+
+    # Render user message immediately.
+    st.session_state["messages"].append({"role": "user", "content": question})
+    with st.chat_message("user"):
+        st.markdown(question)
+
+    # Call backend and render answer.
+    with st.chat_message("assistant"):
+        with st.spinner("Retrieving and generating answer..."):
+            response = ask_question(question, top_k)
+
+        if "answer" in response:
+            st.markdown(response["answer"])
+
+            with st.expander("Sources"):
+                for s in response.get("sources", []):
+                    st.markdown(f"**{s['source']}** — Page {s['page']}")
+                    st.caption(s["preview"])
+
+            st.caption(
+                f"Model: `{response['model']}` · "
+                f"Tokens: `{response['tokens_used']}` · "
+                f"Chunks retrieved: `{top_k}`"
+            )
+
+            st.session_state["messages"].append({
+                "role":    "assistant",
+                "content": response["answer"],
+                "sources": response.get("sources", []),
+            })
+
+        else:
+            error_msg = response.get("detail", "Something went wrong.")
+            st.error(error_msg)
+            logger.error("Query error for question '%s': %s", question[:60], error_msg)
