@@ -63,3 +63,25 @@ class EvalResult:
                 f"  {metric:<25} {score:.4f}   {bar}   {flag}"
             )
         return "\n".join(lines)
+
+
+def _extract_scores(results) -> dict[str, float]:
+    """
+    Extract per-metric mean scores from a RAGAS EvaluationResult.
+
+    """
+    df = results.to_pandas()
+    scores: dict[str, float] = {}
+
+    for metric in METRICS:
+        if metric.name in df.columns:
+            valid = df[metric.name].dropna()
+            scores[metric.name] = (
+                round(float(valid.mean()), 4) if len(valid) > 0 else 0.0
+            )
+        else:
+            logger.warning("Metric '%s' not found in RAGAS results.", metric.name)
+            scores[metric.name] = 0.0
+
+    return scores
+
