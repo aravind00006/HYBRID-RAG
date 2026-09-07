@@ -1,3 +1,12 @@
+---
+title: HYBRID-RAG
+emoji: 🔍
+sdk: streamlit
+sdk_version: "1.35.0"
+app_file: app.py
+pinned: false
+---
+
 # 🔍 HYBRID-RAG
 
 > A production-grade Retrieval-Augmented Generation (RAG) system over SEC 10-K filings.
