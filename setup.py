@@ -8,7 +8,7 @@ setup(
     name="hybrid-rag",
     version="1.0.0",
     description="Production-grade Hybrid RAG system over SEC 10-K filings.",
-    author="Batman",
+    author="Aravind",
     python_requires=">=3.11",
     packages=find_packages(
         exclude=[
