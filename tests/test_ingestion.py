@@ -121,3 +121,64 @@ class TestIsArtifact:
         )
         assert _is_artifact(text) is False
 
+
+#  chunk_documents tests 
+
+class TestChunkDocuments:
+    """Tests for chunk_documents() in ingestion/chunker.py."""
+
+    def test_raises_on_empty_pages(self):
+        """chunk_documents raises ValueError on an empty pages list."""
+        with pytest.raises(ValueError, match="Cannot chunk an empty document list"):
+            chunk_documents([])
+
+    def test_returns_list_of_documents(self):
+        """chunk_documents returns a non-empty list of Documents."""
+        pages  = make_pages(n=3, words_per_page=200)
+        chunks = chunk_documents(pages)
+        assert isinstance(chunks, list)
+        assert len(chunks) > 0
+
+    def test_chunks_are_smaller_than_pages(self):
+        """Each chunk is smaller than or equal to the configured chunk_size."""
+        from config import get_settings
+        settings = get_settings()
+        pages    = make_pages(n=3, words_per_page=300)
+        chunks   = chunk_documents(pages)
+        for chunk in chunks:
+            assert len(chunk.page_content) <= settings.chunk_size + settings.chunk_overlap
+
+    def test_metadata_preserved_in_chunks(self):
+        """Chunks inherit source and page metadata from their parent page."""
+        pages  = make_pages(n=2)
+        chunks = chunk_documents(pages)
+        for chunk in chunks:
+            assert "source" in chunk.metadata
+            assert "page" in chunk.metadata
+
+    def test_artifact_chunks_filtered_out(self):
+        """Artifact chunks (browser print noise) are removed from output."""
+        real_page = make_document(
+            "Apple's total net sales for fiscal year 2024 were $391.035 billion. "
+            "Products segment revenue was $298.085 billion. Services revenue was "
+            "$96.169 billion. Net income attributable to Apple was $93.736 billion.",
+            page=0,
+        )
+        artifact_page = make_document(
+            "1/15/2024, 10:32 AM https://www.sec.gov/Archives/edgar/data/320193",
+            page=1,
+        )
+        chunks = chunk_documents([real_page, artifact_page])
+        # All chunks should be real content, none should be the artifact.
+        for chunk in chunks:
+            assert "10:32 AM" not in chunk.page_content
+
+    def test_raises_when_all_chunks_are_artifacts(self):
+        """chunk_documents raises ValueError if all chunks are artifacts."""
+        # Build a page that is entirely artifact-like.
+        artifact = make_document(
+            "1/15/2024, 10:32 AM https://www.sec.gov/Archives/edgar/data/320193/0000",
+            page=0,
+        )
+        with pytest.raises(ValueError, match="zero valid chunks"):
+            chunk_documents([artifact])
