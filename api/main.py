@@ -71,3 +71,45 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Shutdown
     logger.info("HYBRID-RAG API shutting down.")
+
+
+    #  App factory ─
+
+def create_app() -> FastAPI:
+    """
+    Create and configure the FastAPI application.
+
+    """
+    app = FastAPI(
+        title="HYBRID-RAG API",
+        description=(
+            "Production-grade Hybrid RAG system over SEC 10-K filings. "
+            "Combines BM25 keyword search and semantic vector search via "
+            "Reciprocal Rank Fusion (RRF). Ask questions in plain English, "
+            "get grounded answers with citations."
+        ),
+        version="1.0.0",
+        lifespan=lifespan,
+    )
+
+    #  Rate limiting 
+    # Attach limiter to app.state so slowapi middleware can find it.
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+    #  CORS 
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    #  Router 
+    app.include_router(router, prefix="/api/v1")
+
+    return app
+
+
+#  Entry point 
+app = create_app()
