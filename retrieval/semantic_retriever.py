@@ -27,3 +27,42 @@ class SemanticRetriever:
 
         self._store = store
         logger.info("SemanticRetriever initialised with ChromaDB store.")
+
+    def retrieve(self, query: str, top_k: int) -> list[dict]:
+        """
+        Embeds the query using the same OpenAI model used during ingestion,
+        then performs cosine similarity search against the stored vectors.
+        """
+        if not query.strip():
+            logger.warning("SemanticRetriever received an empty query — returning no results.")
+            return []
+
+        logger.info(
+            "Running semantic search for query: '%s' (top_k=%d).",
+            query[:60],
+            top_k,
+        )
+
+        try:
+            raw = self._store.similarity_search_with_relevance_scores(
+                query, k=top_k
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Semantic search failed: {exc}") from exc
+
+        results = [
+            {
+                "text":     doc.page_content,
+                "score":    round(score, 4),
+                "metadata": doc.metadata,
+                "rank":     rank,
+            }
+            for rank, (doc, score) in enumerate(raw, start=1)
+        ]
+
+        logger.info(
+            "Semantic search retrieved %d results for query: '%s'.",
+            len(results),
+            query[:60],
+        )
+        return results
