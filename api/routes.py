@@ -136,3 +136,72 @@ async def query(body: QueryRequest, request: Request) -> QueryResponse:
         tokens_used=response.tokens_used,
         question=body.question,
     )
+
+# Upload 
+
+@router.post(
+    "/upload",
+    response_model=UploadResponse,
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid file type"},
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
+        500: {"model": ErrorResponse, "description": "Processing error"},
+    },
+    summary="Upload a PDF and replace the active document",
+)
+async def upload(request: Request, file: UploadFile = File(...)) -> UploadResponse:
+    """
+    Upload a PDF, embed it, and set it as the active document.
+
+    """
+    # SECURITY FIX: strip directory components from the uploaded filename.
+    safe_filename = Path(file.filename).name
+
+    if not safe_filename.endswith(".pdf"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only PDF files are supported.",
+        )
+
+    logger.info("Upload received: '%s' (safe name: '%s').", file.filename, safe_filename)
+
+    # Save upload to a temp file — UploadFile is a stream, not a path.
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        shutil.copyfileobj(file.file, tmp)
+        tmp_path = Path(tmp.name)
+
+    try:
+        pages  = load_pdf(tmp_path)
+        chunks = chunk_documents(pages)
+        store  = embed_and_store(
+            chunks,
+            chroma_path=f"./data/chroma_uploads/{safe_filename}",
+        )
+    except Exception as exc:
+        logger.error("Upload processing failed for '%s': %s", safe_filename, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Processing failed: {exc}",
+        )
+    finally:
+        tmp_path.unlink(missing_ok=True)  # Always clean up the temp file.
+
+    # Rebuild BM25 index for the new document and update all app.state.
+    from rank_bm25 import BM25Okapi
+    tokenized = [c.page_content.lower().split() for c in chunks]
+
+    request.app.state.chunks     = chunks
+    request.app.state.store      = store
+    request.app.state.bm25_index = BM25Okapi(tokenized)
+
+    logger.info(
+        "Upload complete — '%s', %d chunks embedded, BM25 rebuilt.",
+        safe_filename,
+        len(chunks),
+    )
+
+    return UploadResponse(
+        filename=safe_filename,
+        chunks_created=len(chunks),
+        message=f"'{safe_filename}' loaded successfully. You can now ask questions from it.",
+    )
