@@ -85,3 +85,65 @@ def _extract_scores(results) -> dict[str, float]:
 
     return scores
 
+
+def run_evaluation(samples: list[dict]) -> EvalResult:
+    """
+    Run RAGAS evaluation over a list of RAG samples.
+
+    """
+    if not samples:
+        raise ValueError("samples list is empty -- nothing to evaluate.")
+
+    required = {"question", "answer", "contexts", "ground_truth"}
+    for i, sample in enumerate(samples):
+        missing = required - set(sample.keys())
+        if missing:
+            raise ValueError(
+                f"Sample {i} is missing required keys: {missing}. "
+                f"Each sample must have: {required}"
+            )
+
+    logger.info("Starting RAGAS evaluation over %d samples.", len(samples))
+
+    settings  = get_settings()
+    dataset   = Dataset.from_list(samples)
+
+    judge_llm = ChatOpenAI(
+        model=settings.llm_model,
+        temperature=0.0,
+        openai_api_key=settings.openai_api_key,
+    )
+    judge_emb = OpenAIEmbeddings(
+        model=settings.embedding_model,
+        openai_api_key=settings.openai_api_key,
+    )
+
+    try:
+        results = evaluate(
+            dataset=dataset,
+            metrics=METRICS,
+            llm=judge_llm,
+            embeddings=judge_emb,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"RAGAS evaluation failed: {exc}") from exc
+
+    scores = _extract_scores(results)
+
+    faith  = scores.get("faithfulness", 0.0)
+    if faith >= PASS_THRESHOLD:
+        status = "pass"
+    elif faith >= WARN_THRESHOLD:
+        status = "warn"
+    else:
+        status = "fail"
+
+    logger.info(
+        "RAGAS evaluation complete — status: %s, faithfulness: %.4f.",
+        status.upper(),
+        faith,
+    )
+
+    return EvalResult(scores=scores, status=status)
+
+
