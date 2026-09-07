@@ -147,3 +147,28 @@ def run_evaluation(samples: list[dict]) -> EvalResult:
     return EvalResult(scores=scores, status=status)
 
 
+#  Sample evaluation runner 
+
+SAMPLE_QUESTIONS = [
+    {
+        "question": "What was Apple's total net sales in fiscal year 2024?",
+        "answer":   "Apple's total net sales for fiscal year 2024 were $391.035 billion.",
+        "contexts": [
+            "Total net sales $391,035 $383,285 $394,328 for fiscal years 2024, 2023, 2022."
+        ],
+        "ground_truth": "Apple's total net sales in fiscal year 2024 were $391.035 billion.",
+    },
+    {
+        "question": "What was Apple's net income in fiscal year 2024?",
+        "answer":   "Apple's net income for fiscal year 2024 was $93.736 billion.",
+        "contexts": [
+            "Net income $93,736 $96,995 $99,803 for fiscal years 2024, 2023, 2022."
+        ],
+        "ground_truth": "Apple's net income in fiscal year 2024 was $93.736 billion.",
+    },
+]
+
+
+if __name__ == "__main__":
+    result = run_evaluation(SAMPLE_QUESTIONS)
+    print(result.summary())
