@@ -35,3 +35,36 @@ class BM25Retriever:
         self._bm25 = BM25Okapi(tokenized)
 
         logger.info("BM25 index built successfully.")
+
+    def retrieve(self, query: str, top_k: int) -> list[dict]:
+        """
+        Return the top-k documents ranked by BM25 score for the query.
+
+        """
+        if not query.strip():
+            logger.warning("BM25 received an empty query — returning no results.")
+            return []
+
+        tokens = query.lower().split()
+        scores = self._bm25.get_scores(tokens)
+
+        # Pair each doc with its score and sort highest first.
+        ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
+
+        results = []
+        for rank, (idx, score) in enumerate(ranked[:top_k], start=1):
+            if score <= 0.0:
+                break  # No more documents share tokens with the query.
+            results.append({
+                "text":     self._documents[idx].page_content,
+                "score":    round(float(score), 4),
+                "metadata": self._documents[idx].metadata,
+                "rank":     rank,
+            })
+
+        logger.info(
+            "BM25 retrieved %d results for query: '%s'.",
+            len(results),
+            query[:60],
+        )
+        return results
