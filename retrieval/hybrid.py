@@ -57,3 +57,41 @@ def _rrf_fusion(
     return fused
 
 
+def hybrid_retrieve(
+    query: str,
+    bm25: BM25Retriever,
+    semantic: SemanticRetriever,
+    top_k: int | None = None,
+) -> list[dict]:
+    """
+    Retrieve top-k chunks by fusing BM25 and semantic search via RRF.
+
+    """
+    if not query.strip():
+        raise ValueError("Query must be a non-empty string.")
+
+    settings = get_settings()
+    k = top_k or settings.top_k
+    candidates = k * CANDIDATE_MULTIPLIER
+
+    logger.info(
+        "Hybrid retrieve — query: '%s', top_k=%d, candidates=%d.",
+        query[:60],
+        k,
+        candidates,
+    )
+
+    bm25_results = bm25.retrieve(query, top_k=candidates)
+    semantic_results = semantic.retrieve(query, top_k=candidates)
+
+    logger.info(
+        "Retriever results — BM25: %d, Semantic: %d.",
+        len(bm25_results),
+        len(semantic_results),
+    )
+
+    fused = _rrf_fusion([bm25_results, semantic_results])
+    final = fused[:k]
+
+    logger.info("Returning top %d chunks after RRF fusion.", len(final))
+    return final
