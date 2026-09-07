@@ -72,3 +72,36 @@ def embed_and_store(
     return store
 
 
+def load_store(
+    collection_name: str | None = None,
+    chroma_path: str | None = None,
+) -> Chroma:
+    """
+    Load an existing ChromaDB collection from disk without re-embedding.
+
+    """
+    settings = get_settings()
+    path = chroma_path or settings.chroma_path
+
+    # Derive collection name from directory name — must match embed_and_store().
+    name = collection_name or Path(path).name or settings.collection_name
+
+    if not Path(path).exists():
+        raise FileNotFoundError(
+            f"ChromaDB not found at '{path}'. "
+            "Run embed_and_store() first to build the index."
+        )
+
+    logger.info("Loading ChromaDB collection '%s' from '%s'.", name, path)
+
+    try:
+        store = Chroma(
+            collection_name=name,
+            embedding_function=_get_embedding_model(),
+            persist_directory=path,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Failed to load ChromaDB collection: {exc}") from exc
+
+    logger.info("ChromaDB collection '%s' loaded successfully.", name)
+    return store
