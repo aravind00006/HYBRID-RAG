@@ -58,3 +58,70 @@ def ask_question(question: str, top_k: int) -> dict:
     except requests.exceptions.ConnectionError:
         logger.error("Query failed — API not reachable.")
         return {"detail": "API is not reachable. Make sure the backend is running."}
+# Sidebar 
+
+with st.sidebar:
+    st.title("🔍 HYBRID-RAG")
+    st.caption("Hybrid BM25 + Semantic search over SEC 10-K filings.")
+
+    st.divider()
+
+    # Health check
+    health = check_health()
+    if health.get("status") == "ok":
+        st.success("API connected", icon="✅")
+        st.caption(f"Model: `{health.get('model', '—')}`")
+    else:
+        st.error("API not reachable", icon="🔴")
+        st.caption("Start the backend: `uvicorn api.main:app --reload`")
+
+    st.divider()
+
+    # Active document
+    st.subheader("Active Document")
+    active_doc = st.session_state.get("active_doc", "aapl-10k-2024.pdf (default)")
+    st.info(f"📄 {active_doc}")
+
+    st.divider()
+
+    # PDF upload
+    st.subheader("Upload Your PDF")
+    st.caption("Upload any 10-K to switch documents. Replaces the active document.")
+
+    uploaded = st.file_uploader(
+        "Choose a PDF",
+        type=["pdf"],
+        label_visibility="collapsed",
+    )
+
+    if uploaded:
+        if st.button("Load PDF", use_container_width=True, type="primary"):
+            with st.spinner(f"Processing '{uploaded.name}'..."):
+                result = upload_pdf(uploaded)
+
+            if "chunks_created" in result:
+                st.success(f"Loaded — {result['chunks_created']} chunks created.")
+                st.session_state["active_doc"] = uploaded.name
+                st.session_state["messages"]   = []  # Clear chat on new document.
+                st.rerun()
+            else:
+                error = result.get("detail", "Upload failed.")
+                st.error(error)
+                logger.warning("Upload failed for '%s': %s", uploaded.name, error)
+
+    if st.button("Reset to Default PDF", use_container_width=True):
+        st.session_state["active_doc"] = "aapl-10k-2024.pdf (default)"
+        st.session_state["messages"]   = []
+        st.rerun()
+
+    st.divider()
+
+    # Retrieval settings
+    st.subheader("Settings")
+    top_k = st.slider(
+        "Chunks to retrieve (top-k)",
+        min_value=1,
+        max_value=10,
+        value=5,
+        help="Higher values retrieve more context but use more tokens.",
+    )
