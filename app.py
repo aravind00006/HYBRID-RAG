@@ -29,7 +29,7 @@ st.set_page_config(
 )
 
 
-#  Helpers ─
+#  Helpers 
 
 def check_health() -> dict:
     """Ping the /health endpoint and return the status dict."""
@@ -58,7 +58,29 @@ def ask_question(question: str, top_k: int) -> dict:
     except requests.exceptions.ConnectionError:
         logger.error("Query failed — API not reachable.")
         return {"detail": "API is not reachable. Make sure the backend is running."}
-# Sidebar 
+
+
+def upload_pdf(file) -> dict:
+    """
+    Upload a PDF to the /upload endpoint and return the response dict.
+
+    """
+    try:
+        r = requests.post(
+            f"{API_BASE}/upload",
+            files={"file": (file.name, file.getvalue(), "application/pdf")},
+            timeout=REQUEST_TIMEOUT_UPLOAD,
+        )
+        return r.json()
+    except requests.exceptions.Timeout:
+        logger.error("Upload timed out after %ds.", REQUEST_TIMEOUT_UPLOAD)
+        return {"detail": "Upload timed out. Try a smaller PDF."}
+    except requests.exceptions.ConnectionError:
+        logger.error("Upload failed — API not reachable.")
+        return {"detail": "API is not reachable. Make sure the backend is running."}
+
+
+#  Sidebar 
 
 with st.sidebar:
     st.title("🔍 HYBRID-RAG")
@@ -125,3 +147,5 @@ with st.sidebar:
         value=5,
         help="Higher values retrieve more context but use more tokens.",
     )
+
+
