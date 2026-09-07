@@ -29,3 +29,32 @@ st.set_page_config(
 )
 
 
+#  Helpers ─
+
+def check_health() -> dict:
+    """Ping the /health endpoint and return the status dict."""
+    try:
+        r = requests.get(f"{API_BASE}/health", timeout=REQUEST_TIMEOUT_HEALTH)
+        return r.json() if r.status_code == 200 else {}
+    except requests.exceptions.ConnectionError:
+        logger.warning("Health check failed — API not reachable at %s.", API_BASE)
+        return {}
+
+
+def ask_question(question: str, top_k: int) -> dict:
+    """
+    Send a question to the /query endpoint and return the response dict.
+    """
+    try:
+        r = requests.post(
+            f"{API_BASE}/query",
+            json={"question": question, "top_k": top_k},
+            timeout=REQUEST_TIMEOUT_QUERY,
+        )
+        return r.json()
+    except requests.exceptions.Timeout:
+        logger.error("Query timed out after %ds.", REQUEST_TIMEOUT_QUERY)
+        return {"detail": "Request timed out. Please try again."}
+    except requests.exceptions.ConnectionError:
+        logger.error("Query failed — API not reachable.")
+        return {"detail": "API is not reachable. Make sure the backend is running."}
