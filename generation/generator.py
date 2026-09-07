@@ -54,3 +54,58 @@ def _extract_sources(chunks: list[dict]) -> list[dict]:
 
     return sources
 
+
+def generate_answer(query: str, chunks: list[dict]) -> RAGResponse:
+    """
+    Generate a grounded answer from the query and retrieved chunks.
+
+    """
+    if not query.strip():
+        raise ValueError("Query must be a non-empty string.")
+    if not chunks:
+        raise ValueError("Chunks list is empty — run retrieval first.")
+
+    settings = get_settings()
+
+    logger.info(
+        "Generating answer for query: '%s' using %d chunks.",
+        query[:60],
+        len(chunks),
+    )
+
+    llm = ChatOpenAI(
+        model=settings.llm_model,
+        temperature=settings.llm_temperature,
+        openai_api_key=settings.openai_api_key,
+    )
+
+    messages = [
+        SystemMessage(content=SYSTEM_PROMPT),
+        HumanMessage(content=build_user_message(query, chunks)),
+    ]
+
+    try:
+        response = llm.invoke(messages)
+    except Exception as exc:
+        raise RuntimeError(f"LLM call failed: {exc}") from exc
+
+    tokens = (
+        response.response_metadata
+        .get("token_usage", {})
+        .get("total_tokens", 0)
+    )
+
+    sources = _extract_sources(chunks)
+
+    logger.info(
+        "Answer generated — tokens used: %d, sources cited: %d.",
+        tokens,
+        len(sources),
+    )
+
+    return RAGResponse(
+        answer=response.content,
+        sources=sources,
+        model=settings.llm_model,
+        tokens_used=tokens,
+    )
