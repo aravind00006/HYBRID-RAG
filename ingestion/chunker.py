@@ -46,3 +46,49 @@ def _is_artifact(text: str) -> bool:
 
     return False
 
+
+def chunk_documents(pages: list[Document]) -> list[Document]:
+    """
+    Split a list of page-level Documents into overlapping chunks.
+    """
+    if not pages:
+        raise ValueError("Cannot chunk an empty document list.")
+
+    settings = get_settings()
+    logger.info(
+        "Chunking %d pages — chunk_size=%d, chunk_overlap=%d.",
+        len(pages),
+        settings.chunk_size,
+        settings.chunk_overlap,
+    )
+
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=settings.chunk_size,
+        chunk_overlap=settings.chunk_overlap,
+        separators=SEPARATORS,
+        length_function=len,
+        is_separator_regex=False,
+    )
+
+    chunks = splitter.split_documents(pages)
+    total_raw = len(chunks)
+
+    # Filter empty and artifact chunks.
+    chunks = [c for c in chunks if c.page_content.strip()]
+    chunks = [c for c in chunks if not _is_artifact(c.page_content)]
+
+    logger.info(
+        "Chunking complete — %d raw chunks, %d kept after filtering (%d removed).",
+        total_raw,
+        len(chunks),
+        total_raw - len(chunks),
+    )
+
+    if not chunks:
+        raise ValueError(
+            "Chunking produced zero valid chunks. "
+            "The PDF may be scanned (image-only), empty, or entirely artifacts. "
+            "Try a text-based PDF."
+        )
+
+    return chunks
