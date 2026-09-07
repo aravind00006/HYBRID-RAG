@@ -81,3 +81,43 @@ class TestLoadPdf:
         assert isinstance(docs, list)
         assert len(docs) == 3
 
+
+#  _is_artifact tests 
+
+class TestIsArtifact:
+    """Tests for the _is_artifact() helper in ingestion/chunker.py."""
+
+    def test_real_content_is_not_artifact(self):
+        """A real financial sentence is not an artifact."""
+        text = (
+            "Apple's total net sales for fiscal year 2024 were $391.035 billion, "
+            "compared to $383.285 billion in fiscal year 2023."
+        )
+        assert _is_artifact(text) is False
+
+    def test_too_short_is_artifact(self):
+        """A chunk with fewer than 40 non-whitespace characters is an artifact."""
+        assert _is_artifact("Short.") is True
+        assert _is_artifact("   ") is True
+        assert _is_artifact("") is True
+
+    def test_timestamp_plus_url_is_artifact(self):
+        """A timestamp and URL pattern (EDGAR browser print) is an artifact."""
+        text = "1/15/2024, 10:32 AM https://www.sec.gov/Archives/edgar/data/320193"
+        assert _is_artifact(text) is True
+
+    def test_mostly_url_is_artifact(self):
+        """A chunk composed mostly of URLs is an artifact."""
+        text = "See https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240930.htm for details."
+        # URL is > 30% of the total text length.
+        assert _is_artifact(text) is True
+
+    def test_content_with_url_mention_is_not_artifact(self):
+        """Content that briefly mentions a URL but is mostly text is not an artifact."""
+        text = (
+            "For more information about Apple's fiscal year results, refer to the "
+            "company's investor relations website at https://investor.apple.com. "
+            "Total revenue was $391 billion for the year ended September 28, 2024."
+        )
+        assert _is_artifact(text) is False
+
