@@ -1,35 +1,26 @@
 """
-api/main.py — FastAPI application factory and lifespan manager.
+FastAPI application factory and lifespan manager.
 Single responsibility: app wiring only.
+
 """
 
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from rank_bm25 import BM25Okapi
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
-
 from api.routes import router
 from config import get_settings
 from ingestion.chunker import chunk_documents
 from ingestion.embedder import embed_and_store, load_store
 from ingestion.loader import load_pdf
+from retrieval.bm25_retriever import BM25Retriever
 from logger import get_logger
 
 logger = get_logger(__name__)
 
-# Rate limiter 
-# get_remote_address extracts the client IP from the request for per-IP limits.
-# The limiter instance is imported by routes.py to decorate individual endpoints.
-limiter = Limiter(key_func=get_remote_address)
-
-# Lifespan 
+#  Lifespan 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -53,17 +44,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("ChromaDB not found — embedding %d chunks.", len(chunks))
         store = embed_and_store(chunks)
 
-    # Step 3 — Build BM25 index ONCE at startup.
+    # Step 3 — Build full BM25Retriever ONCE at startup.
     # BM25 is always in-memory — must be rebuilt on each server start.
-    logger.info("Building BM25 index over %d chunks.", len(chunks))
-    tokenized  = [c.page_content.lower().split() for c in chunks]
-    bm25_index = BM25Okapi(tokenized)
-    logger.info("BM25 index built successfully.")
+    bm25 = BM25Retriever(chunks)
 
     # Step 4 — Store everything in app.state.
-    app.state.chunks     = chunks
-    app.state.store      = store
-    app.state.bm25_index = bm25_index
+    app.state.chunks = chunks
+    app.state.store  = store
+    app.state.bm25   = bm25
 
     logger.info("HYBRID-RAG API startup complete — ready to serve requests.")
 
@@ -73,12 +61,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("HYBRID-RAG API shutting down.")
 
 
-    #  App factory ─
+#  App factory 
 
 def create_app() -> FastAPI:
     """
     Create and configure the FastAPI application.
-
     """
     app = FastAPI(
         title="HYBRID-RAG API",
@@ -92,12 +79,8 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    #  Rate limiting 
-    # Attach limiter to app.state so slowapi middleware can find it.
-    app.state.limiter = limiter
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
     #  CORS 
+    # Allows the Streamlit frontend (localhost:8501) to call this API.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -111,5 +94,5 @@ def create_app() -> FastAPI:
     return app
 
 
-#  Entry point 
+#  Entry point
 app = create_app()
