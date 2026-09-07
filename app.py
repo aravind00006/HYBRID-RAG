@@ -1,26 +1,146 @@
 """
 Streamlit frontend for the HYBRID-RAG system. Single responsibility: UI only.
-Pure HTTP client to the FastAPI backend — no pipeline logic here.
+Streamlit Community Cloud version — calls the pipeline directly instead of
+calling FastAPI over HTTP. 
 """
 
-import os
+from pathlib import Path
 
-import requests
 import streamlit as st
 
+from config import get_settings
+from ingestion.chunker import chunk_documents
+from ingestion.embedder import embed_and_store, load_store
+from ingestion.loader import load_pdf
 from logger import get_logger
+from retrieval.bm25_retriever import BM25Retriever
+from retrieval.hybrid import hybrid_retrieve
+from retrieval.semantic_retriever import SemanticRetriever
+from generation.generator import generate_answer
 
 logger = get_logger(__name__)
 
-#  Config 
-API_BASE = os.getenv("API_BASE", "http://localhost:8000/api/v1")
 
-REQUEST_TIMEOUT_QUERY  = 30  # seconds — LLM generation can take a moment
-REQUEST_TIMEOUT_UPLOAD = 60  # seconds — embedding a full 10-K takes longer
-REQUEST_TIMEOUT_HEALTH = 3   # seconds — fast liveness check
+# Pipeline startup — runs ONCE on server boot, cached forever.
+
+@st.cache_resource(show_spinner="Loading pipeline... this takes ~30s on first run.")
+def load_pipeline() -> tuple:
+    """
+    Load the default PDF and build both retrievers.
+    """
+    settings = get_settings()
+    logger.info("Pipeline startup — loading default document.")
+
+    pages  = load_pdf(settings.default_pdf_path)
+    chunks = chunk_documents(pages)
+
+    chroma_path = settings.chroma_path
+    if Path(chroma_path).exists() and any(Path(chroma_path).iterdir()):
+        logger.info("ChromaDB found at '%s' — loading from disk.", chroma_path)
+        store = load_store()
+    else:
+        logger.info("ChromaDB not found — embedding %d chunks.", len(chunks))
+        store = embed_and_store(chunks)
+
+    bm25 = BM25Retriever(chunks)
+
+    logger.info("Pipeline ready — %d chunks, retrievers built.", len(chunks))
+    return chunks, store, bm25
 
 
-#  Page config ─
+def run_query(question: str, top_k: int) -> dict:
+    """
+    Run the full RAG pipeline for a question.
+
+    """
+    chunks, store, bm25 = load_pipeline()
+
+    # If the user uploaded a new document this session, use that instead.
+    if st.session_state.get("session_chunks") is not None:
+        chunks = st.session_state["session_chunks"]
+        store  = st.session_state["session_store"]
+        bm25   = st.session_state["session_bm25"]
+
+    try:
+        semantic = SemanticRetriever(store)
+        results  = hybrid_retrieve(
+            query    = question,
+            bm25     = bm25,
+            semantic = semantic,
+            top_k    = top_k,
+        )
+    except Exception as exc:
+        logger.error("Retrieval failed: %s", exc)
+        return {"detail": f"Retrieval failed: {exc}"}
+
+    try:
+        response = generate_answer(question, results)
+    except Exception as exc:
+        logger.error("Generation failed: %s", exc)
+        return {"detail": f"Generation failed: {exc}"}
+
+    logger.info(
+        "Query complete — tokens: %d, sources: %d.",
+        response.tokens_used,
+        len(response.sources),
+    )
+
+    return {
+        "answer":      response.answer,
+        "sources":     response.sources,
+        "model":       response.model,
+        "tokens_used": response.tokens_used,
+    }
+
+
+def process_upload(uploaded_file) -> dict:
+    """
+    Embed an uploaded PDF and store the retrievers in session_state.
+    """
+    # Path traversal fix — same as routes.py used Path(file.filename).name
+    safe_name = Path(uploaded_file.name).name
+
+    if not safe_name.endswith(".pdf"):
+        return {"detail": "Only PDF files are supported."}
+
+    logger.info("Upload received: '%s'.", safe_name)
+
+    try:
+        # Write the uploaded bytes to a temp file so load_pdf() gets a path.
+        import tempfile, shutil
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(uploaded_file.getvalue())
+            tmp_path = Path(tmp.name)
+
+        pages  = load_pdf(tmp_path)
+        chunks = chunk_documents(pages)
+        store  = embed_and_store(
+            chunks,
+            chroma_path=f"./data/chroma_uploads/{safe_name}",
+        )
+        bm25   = BM25Retriever(chunks)
+
+    except Exception as exc:
+        logger.error("Upload processing failed for '%s': %s", safe_name, exc)
+        return {"detail": f"Processing failed: {exc}"}
+    finally:
+        tmp_path.unlink(missing_ok=True)  # Always clean up the temp file.
+
+    st.session_state["session_chunks"] = chunks
+    st.session_state["session_store"]  = store
+    st.session_state["session_bm25"]   = bm25
+
+    logger.info(
+        "Upload complete — '%s', %d chunks embedded, BM25 rebuilt.",
+        safe_name,
+        len(chunks),
+    )
+
+    return {"chunks_created": len(chunks)}
+
+
+# Page config — must be the first Streamlit call in the script.
+
 
 st.set_page_config(
     page_title="HYBRID-RAG",
@@ -29,58 +149,8 @@ st.set_page_config(
 )
 
 
-#  Helpers 
+# Sidebar — identical layout to the original app.py.
 
-def check_health() -> dict:
-    """Ping the /health endpoint and return the status dict."""
-    try:
-        r = requests.get(f"{API_BASE}/health", timeout=REQUEST_TIMEOUT_HEALTH)
-        return r.json() if r.status_code == 200 else {}
-    except requests.exceptions.ConnectionError:
-        logger.warning("Health check failed — API not reachable at %s.", API_BASE)
-        return {}
-
-
-def ask_question(question: str, top_k: int) -> dict:
-    """
-    Send a question to the /query endpoint and return the response dict.
-    """
-    try:
-        r = requests.post(
-            f"{API_BASE}/query",
-            json={"question": question, "top_k": top_k},
-            timeout=REQUEST_TIMEOUT_QUERY,
-        )
-        return r.json()
-    except requests.exceptions.Timeout:
-        logger.error("Query timed out after %ds.", REQUEST_TIMEOUT_QUERY)
-        return {"detail": "Request timed out. Please try again."}
-    except requests.exceptions.ConnectionError:
-        logger.error("Query failed — API not reachable.")
-        return {"detail": "API is not reachable. Make sure the backend is running."}
-
-
-def upload_pdf(file) -> dict:
-    """
-    Upload a PDF to the /upload endpoint and return the response dict.
-
-    """
-    try:
-        r = requests.post(
-            f"{API_BASE}/upload",
-            files={"file": (file.name, file.getvalue(), "application/pdf")},
-            timeout=REQUEST_TIMEOUT_UPLOAD,
-        )
-        return r.json()
-    except requests.exceptions.Timeout:
-        logger.error("Upload timed out after %ds.", REQUEST_TIMEOUT_UPLOAD)
-        return {"detail": "Upload timed out. Try a smaller PDF."}
-    except requests.exceptions.ConnectionError:
-        logger.error("Upload failed — API not reachable.")
-        return {"detail": "API is not reachable. Make sure the backend is running."}
-
-
-#  Sidebar 
 
 with st.sidebar:
     st.title("🔍 HYBRID-RAG")
@@ -88,25 +158,26 @@ with st.sidebar:
 
     st.divider()
 
-    # Health check
-    health = check_health()
-    if health.get("status") == "ok":
-        st.success("API connected", icon="✅")
-        st.caption(f"Model: `{health.get('model', '—')}`")
-    else:
-        st.error("API not reachable", icon="🔴")
-        st.caption("Start the backend: `uvicorn api.main:app --reload`")
+    # Pipeline status — replaces the HTTP health check.
+    try:
+        settings = get_settings()
+        load_pipeline()  # No-op if already cached.
+        st.success("Pipeline ready", icon="✅")
+        st.caption(f"Model: `{settings.llm_model}`")
+    except Exception as e:
+        st.error("Pipeline failed to load", icon="🔴")
+        st.caption(str(e))
 
     st.divider()
 
-    # Active document
+    # Active document display.
     st.subheader("Active Document")
     active_doc = st.session_state.get("active_doc", "aapl-10k-2024.pdf (default)")
     st.info(f"📄 {active_doc}")
 
     st.divider()
 
-    # PDF upload
+    # PDF upload — same UI as before.
     st.subheader("Upload Your PDF")
     st.caption("Upload any 10-K to switch documents. Replaces the active document.")
 
@@ -119,7 +190,7 @@ with st.sidebar:
     if uploaded:
         if st.button("Load PDF", use_container_width=True, type="primary"):
             with st.spinner(f"Processing '{uploaded.name}'..."):
-                result = upload_pdf(uploaded)
+                result = process_upload(uploaded)
 
             if "chunks_created" in result:
                 st.success(f"Loaded — {result['chunks_created']} chunks created.")
@@ -132,13 +203,17 @@ with st.sidebar:
                 logger.warning("Upload failed for '%s': %s", uploaded.name, error)
 
     if st.button("Reset to Default PDF", use_container_width=True):
+        # Clear session overrides so run_query() falls back to cached pipeline.
+        st.session_state.pop("session_chunks", None)
+        st.session_state.pop("session_store",  None)
+        st.session_state.pop("session_bm25",   None)
         st.session_state["active_doc"] = "aapl-10k-2024.pdf (default)"
         st.session_state["messages"]   = []
         st.rerun()
 
     st.divider()
 
-    # Retrieval settings
+    # Retrieval settings — identical slider.
     st.subheader("Settings")
     top_k = st.slider(
         "Chunks to retrieve (top-k)",
@@ -149,7 +224,7 @@ with st.sidebar:
     )
 
 
-#  Main chat area 
+# Main chat area — identical to the original app.py.
 
 st.title("Ask a Question")
 st.caption(
@@ -174,19 +249,15 @@ for msg in st.session_state["messages"]:
 # Chat input.
 if question := st.chat_input("e.g. What was Apple's revenue in fiscal year 2024?"):
 
-    if not health:
-        st.error("Backend is not reachable. Start the API first.")
-        st.stop()
-
     # Render user message immediately.
     st.session_state["messages"].append({"role": "user", "content": question})
     with st.chat_message("user"):
         st.markdown(question)
 
-    # Call backend and render answer.
+    # Run pipeline and render answer.
     with st.chat_message("assistant"):
         with st.spinner("Retrieving and generating answer..."):
-            response = ask_question(question, top_k)
+            response = run_query(question, top_k)
 
         if "answer" in response:
             st.markdown(response["answer"])
