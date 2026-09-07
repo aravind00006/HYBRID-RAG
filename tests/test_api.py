@@ -82,3 +82,98 @@ class TestHealthEndpoint:
         assert "model" in data
         assert len(data["model"]) > 0
 
+
+#  /query tests 
+
+class TestQueryEndpoint:
+    """Tests for POST /api/v1/query."""
+
+    def _mock_rag_response(self):
+        """Build a mock RAGResponse for generate_answer patching."""
+        from generation.generator import RAGResponse
+        return RAGResponse(
+            answer="Apple's total net sales were $391.035 billion in fiscal year 2024.",
+            sources=[{
+                "source":  "aapl-10k-2024.pdf",
+                "page":    25,
+                "preview": "Total net sales $391,035...",
+            }],
+            model="gpt-4o-mini",
+            tokens_used=842,
+        )
+
+    def test_query_returns_200(self, client):
+        """Query endpoint returns HTTP 200 for a valid question."""
+        with (
+            patch("api.routes.hybrid_retrieve",  return_value=[make_mock_chunk()]),
+            patch("api.routes.generate_answer",  return_value=self._mock_rag_response()),
+            patch("api.routes.BM25Retriever"),
+            patch("api.routes.SemanticRetriever"),
+        ):
+            response = client.post(
+                "/api/v1/query",
+                json={"question": "What was Apple revenue in 2024?", "top_k": 5},
+            )
+        assert response.status_code == 200
+
+    def test_query_response_has_required_fields(self, client):
+        """Query response body contains answer, sources, model, tokens_used, question."""
+        with (
+            patch("api.routes.hybrid_retrieve",  return_value=[make_mock_chunk()]),
+            patch("api.routes.generate_answer",  return_value=self._mock_rag_response()),
+            patch("api.routes.BM25Retriever"),
+            patch("api.routes.SemanticRetriever"),
+        ):
+            response = client.post(
+                "/api/v1/query",
+                json={"question": "What was Apple revenue in 2024?", "top_k": 5},
+            )
+        data = response.json()
+        assert "answer"      in data
+        assert "sources"     in data
+        assert "model"       in data
+        assert "tokens_used" in data
+        assert "question"    in data
+
+    def test_query_echoes_question(self, client):
+        """Query response echoes back the original question."""
+        question = "What was Apple revenue in 2024?"
+        with (
+            patch("api.routes.hybrid_retrieve",  return_value=[make_mock_chunk()]),
+            patch("api.routes.generate_answer",  return_value=self._mock_rag_response()),
+            patch("api.routes.BM25Retriever"),
+            patch("api.routes.SemanticRetriever"),
+        ):
+            response = client.post(
+                "/api/v1/query",
+                json={"question": question, "top_k": 5},
+            )
+        assert response.json()["question"] == question
+
+    def test_query_returns_422_for_short_question(self, client):
+        """Query returns 422 when question is shorter than min_length=3."""
+        response = client.post(
+            "/api/v1/query",
+            json={"question": "hi", "top_k": 5},
+        )
+        assert response.status_code == 422
+
+    def test_query_returns_422_for_invalid_top_k(self, client):
+        """Query returns 422 when top_k is out of the valid range (1-20)."""
+        response = client.post(
+            "/api/v1/query",
+            json={"question": "What was Apple revenue?", "top_k": 99},
+        )
+        assert response.status_code == 422
+
+    def test_query_returns_503_when_chunks_not_set(self, client):
+        """Query returns 503 when app.state.chunks is None."""
+        client.app.state.chunks = None
+        response = client.post(
+            "/api/v1/query",
+            json={"question": "What was Apple revenue?", "top_k": 5},
+        )
+        assert response.status_code == 503
+        # Restore for other tests.
+        client.app.state.chunks = [make_mock_chunk()]
+
