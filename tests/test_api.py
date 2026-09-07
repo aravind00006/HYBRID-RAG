@@ -52,3 +52,33 @@ def client():
         with TestClient(app) as c:
             yield c
 
+
+#  /health tests ─
+
+class TestHealthEndpoint:
+    """Tests for GET /api/v1/health."""
+
+    def test_health_returns_200(self, client):
+        """Health endpoint returns HTTP 200."""
+        response = client.get("/api/v1/health")
+        assert response.status_code == 200
+
+    def test_health_returns_ok_status(self, client):
+        """Health response body has status='ok'."""
+        response = client.get("/api/v1/health")
+        data     = response.json()
+        assert data["status"] == "ok"
+
+    def test_health_retriever_ready_true_when_state_set(self, client):
+        """retriever_ready is True when chunks and store are in app.state."""
+        response = client.get("/api/v1/health")
+        data     = response.json()
+        assert data["retriever_ready"] is True
+
+    def test_health_includes_model_name(self, client):
+        """Health response includes the configured LLM model name."""
+        response = client.get("/api/v1/health")
+        data     = response.json()
+        assert "model" in data
+        assert len(data["model"]) > 0
+
