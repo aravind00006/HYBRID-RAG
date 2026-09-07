@@ -234,3 +234,67 @@ class TestRrfFusion:
         texts  = {r["text"] for r in result}
         assert texts == {"doc A", "doc B", "doc C", "doc D"}
 
+
+#  hybrid_retrieve tests 
+
+class TestHybridRetrieve:
+    """Tests for hybrid_retrieve() in retrieval/hybrid.py."""
+
+    def _make_mock_bm25(self, results: list[dict]) -> MagicMock:
+        """Return a mock BM25Retriever that returns the given results."""
+        mock = MagicMock(spec=BM25Retriever)
+        mock.retrieve.return_value = results
+        return mock
+
+    def _make_mock_semantic(self, results: list[dict]) -> MagicMock:
+        """Return a mock SemanticRetriever that returns the given results."""
+        mock = MagicMock(spec=SemanticRetriever)
+        mock.retrieve.return_value = results
+        return mock
+
+    def _make_result(self, text: str, rank: int) -> dict:
+        return {
+            "text":     text,
+            "score":    1.0,
+            "metadata": {"source": "test.pdf", "page": 0},
+            "rank":     rank,
+        }
+
+    def test_raises_on_empty_query(self):
+        """hybrid_retrieve raises ValueError for a blank query."""
+        with pytest.raises(ValueError, match="non-empty string"):
+            hybrid_retrieve(
+                query="   ",
+                bm25=self._make_mock_bm25([]),
+                semantic=self._make_mock_semantic([]),
+            )
+
+    def test_returns_top_k_results(self):
+        """hybrid_retrieve returns exactly top_k results when enough are available."""
+        results = [self._make_result(f"doc {i}", rank=i) for i in range(1, 6)]
+        bm25     = self._make_mock_bm25(results)
+        semantic = self._make_mock_semantic(results)
+
+        final = hybrid_retrieve(query="Apple revenue", bm25=bm25, semantic=semantic, top_k=3)
+        assert len(final) == 3
+
+    def test_calls_both_retrievers(self):
+        """hybrid_retrieve calls both BM25 and semantic retrievers."""
+        bm25     = self._make_mock_bm25([])
+        semantic = self._make_mock_semantic([])
+
+        hybrid_retrieve(query="Apple revenue", bm25=bm25, semantic=semantic, top_k=5)
+
+        bm25.retrieve.assert_called_once()
+        semantic.retrieve.assert_called_once()
+
+    def test_fetches_candidate_multiplier_times_top_k(self):
+        """Each retriever is called with top_k * CANDIDATE_MULTIPLIER candidates."""
+        from retrieval.hybrid import CANDIDATE_MULTIPLIER
+        bm25     = self._make_mock_bm25([])
+        semantic = self._make_mock_semantic([])
+
+        hybrid_retrieve(query="revenue", bm25=bm25, semantic=semantic, top_k=5)
+
+        bm25.retrieve.assert_called_once_with("revenue", top_k=5 * CANDIDATE_MULTIPLIER)
+        semantic.retrieve.assert_called_once_with("revenue", top_k=5 * CANDIDATE_MULTIPLIER)
