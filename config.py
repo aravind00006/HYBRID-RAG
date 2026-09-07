@@ -84,3 +84,10 @@ class Settings(BaseSettings):
         return v
 
 
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """
+    Return the singleton Settings instance.
+
+    """
+    return Settings()
