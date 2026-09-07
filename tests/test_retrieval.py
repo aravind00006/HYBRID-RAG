@@ -109,3 +109,128 @@ class TestBM25Retriever:
         top_texts = [r["text"] for r in results]
         assert any("net income" in t.lower() for t in top_texts)
 
+
+#  SemanticRetriever tests ─
+
+class TestSemanticRetriever:
+    """Tests for SemanticRetriever in retrieval/semantic_retriever.py."""
+
+    def test_raises_on_none_store(self):
+        """SemanticRetriever raises ValueError when store is None."""
+        with pytest.raises(ValueError, match="cannot be None"):
+            SemanticRetriever(None)
+
+    def test_retrieve_returns_empty_for_blank_query(self):
+        """retrieve() returns an empty list for a blank query string."""
+        mock_store = MagicMock()
+        retriever  = SemanticRetriever(mock_store)
+        results    = retriever.retrieve("   ", top_k=5)
+        assert results == []
+        mock_store.similarity_search_with_relevance_scores.assert_not_called()
+
+    def test_retrieve_calls_store_with_correct_args(self):
+        """retrieve() calls similarity_search_with_relevance_scores with query and k."""
+        mock_store = MagicMock()
+        mock_doc   = make_document("Apple revenue $391 billion.")
+        mock_store.similarity_search_with_relevance_scores.return_value = [
+            (mock_doc, 0.92)
+        ]
+        retriever = SemanticRetriever(mock_store)
+        results   = retriever.retrieve("Apple revenue", top_k=3)
+
+        mock_store.similarity_search_with_relevance_scores.assert_called_once_with(
+            "Apple revenue", k=3
+        )
+        assert len(results) == 1
+
+    def test_retrieve_result_has_required_keys(self):
+        """Each result dict has text, score, metadata, and rank keys."""
+        mock_store = MagicMock()
+        mock_doc   = make_document("Apple revenue $391 billion.", page=5)
+        mock_store.similarity_search_with_relevance_scores.return_value = [
+            (mock_doc, 0.92)
+        ]
+        retriever = SemanticRetriever(mock_store)
+        results   = retriever.retrieve("Apple revenue", top_k=3)
+
+        assert results[0]["text"]              == "Apple revenue $391 billion."
+        assert results[0]["score"]             == 0.92
+        assert results[0]["metadata"]["page"]  == 5
+        assert results[0]["rank"]              == 1
+
+    def test_retrieve_raises_runtime_error_on_store_failure(self):
+        """retrieve() raises RuntimeError if the ChromaDB call fails."""
+        mock_store = MagicMock()
+        mock_store.similarity_search_with_relevance_scores.side_effect = Exception(
+            "ChromaDB connection error"
+        )
+        retriever = SemanticRetriever(mock_store)
+        with pytest.raises(RuntimeError, match="Semantic search failed"):
+            retriever.retrieve("Apple revenue", top_k=3)
+
+
+#  RRF Fusion tests 
+
+class TestRrfFusion:
+    """Tests for _rrf_fusion() in retrieval/hybrid.py."""
+
+    def _make_result(self, text: str, rank: int, score: float = 1.0) -> dict:
+        """Helper — build a retriever result dict."""
+        return {
+            "text":     text,
+            "score":    score,
+            "metadata": {"source": "test.pdf", "page": 0},
+            "rank":     rank,
+        }
+
+    def test_fusion_returns_list(self):
+        """_rrf_fusion returns a list."""
+        list1 = [self._make_result("doc A", rank=1)]
+        list2 = [self._make_result("doc B", rank=1)]
+        result = _rrf_fusion([list1, list2])
+        assert isinstance(result, list)
+
+    def test_fusion_deduplicates_identical_chunks(self):
+        """A chunk appearing in both lists appears only once in the output."""
+        shared = self._make_result("shared chunk about Apple revenue", rank=1)
+        list1  = [shared]
+        list2  = [shared]
+        result = _rrf_fusion([list1, list2])
+        texts  = [r["text"] for r in result]
+        assert len(texts) == len(set(texts))
+
+    def test_shared_chunk_scores_higher_than_exclusive(self):
+        """A chunk in both lists outscores a chunk in only one list."""
+        shared    = self._make_result("shared chunk", rank=1)
+        exclusive = self._make_result("exclusive chunk", rank=1)
+
+        list1 = [shared, exclusive]
+        list2 = [shared]
+
+        result      = _rrf_fusion([list1, list2])
+        shared_rrf  = next(r["rrf_score"] for r in result if r["text"] == "shared chunk")
+        excl_rrf    = next(r["rrf_score"] for r in result if r["text"] == "exclusive chunk")
+
+        assert shared_rrf > excl_rrf
+
+    def test_fusion_ranks_are_sequential(self):
+        """Output ranks start at 1 and increment by 1."""
+        list1  = [self._make_result(f"doc {i}", rank=i) for i in range(1, 4)]
+        list2  = [self._make_result(f"doc {i}", rank=i) for i in range(1, 4)]
+        result = _rrf_fusion([list1, list2])
+        ranks  = [r["rank"] for r in result]
+        assert ranks == list(range(1, len(ranks) + 1))
+
+    def test_fusion_handles_empty_lists(self):
+        """_rrf_fusion handles empty retriever result lists gracefully."""
+        result = _rrf_fusion([[], []])
+        assert result == []
+
+    def test_fusion_combines_unique_chunks_from_both_lists(self):
+        """Output contains all unique chunks from both input lists."""
+        list1  = [self._make_result("doc A", rank=1), self._make_result("doc B", rank=2)]
+        list2  = [self._make_result("doc C", rank=1), self._make_result("doc D", rank=2)]
+        result = _rrf_fusion([list1, list2])
+        texts  = {r["text"] for r in result}
+        assert texts == {"doc A", "doc B", "doc C", "doc D"}
+
